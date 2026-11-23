@@ -42,7 +42,7 @@ const TEAM_ENTRY: &str = concat!(
     r#" "mcp_access_groups": [], "mcp_tool_permissions": {"server-a": ["search"]},"#,
     r#" "vector_stores": ["store-a"], "agents": [], "agent_access_groups": [], "models": [],"#,
     r#" "mcp_toolsets": [], "blocked_tools": [], "search_tools": [], "mcp_tool_search_enabled": null,"#,
-    r#" "skills": [], "apps": null}, "access_group_ids": [], "rotation_count": 0, "auto_rotate": false,"#,
+    r#" "skills": [], "apps": null, "mcp_auth_profiles": {"server-a": "Build"}}, "access_group_ids": [], "rotation_count": 0, "auto_rotate": false,"#,
     r#" "rotation_interval": null, "last_rotation_at": null, "key_rotation_at": null,"#,
     r#" "router_settings": null, "budget_limits": null, "team_spend": 2.25, "team_alias": "Team KV","#,
     r#" "team_tpm_limit": null, "team_rpm_limit": null, "team_tpd_limit": null,"#,
@@ -65,6 +65,24 @@ const TEAM_ENTRY: &str = concat!(
     r#" "jwt_claims": null}"#,
 );
 const PERMISSION_ENTRY: &str = concat!(
+    r#"{"object_permission_id": "kv-permission", "mcp_servers": ["server-a"], "mcp_access_groups": [],"#,
+    r#" "mcp_tool_permissions": {"server-a": ["search"]}, "vector_stores": ["store-a"], "agents": [],"#,
+    r#" "agent_access_groups": [], "models": [], "mcp_toolsets": [], "blocked_tools": [],"#,
+    r#" "search_tools": [], "mcp_tool_search_enabled": null, "skills": [], "apps": null, "mcp_auth_profiles": {"server-a": "Build"}}"#,
+);
+const UNREADABLE_PERMISSION_ENTRY: &str = concat!(
+    r#"{"object_permission_id": "kv-permission", "mcp_servers": ["server-a"], "mcp_access_groups": [],"#,
+    r#" "mcp_tool_permissions": {"server-a": ["search"]}, "vector_stores": ["store-a"], "agents": [],"#,
+    r#" "agent_access_groups": [], "models": [], "mcp_toolsets": [], "blocked_tools": [],"#,
+    r#" "search_tools": [], "mcp_tool_search_enabled": null, "skills": [], "apps": null, "mcp_auth_profiles": "unreadable"}"#,
+);
+const EMPTY_GRANTS_PERMISSION_ENTRY: &str = concat!(
+    r#"{"object_permission_id": "kv-permission", "mcp_servers": ["server-a"], "mcp_access_groups": [],"#,
+    r#" "mcp_tool_permissions": {"server-a": ["search"]}, "vector_stores": ["store-a"], "agents": [],"#,
+    r#" "agent_access_groups": [], "models": [], "mcp_toolsets": [], "blocked_tools": [],"#,
+    r#" "search_tools": [], "mcp_tool_search_enabled": null, "skills": [], "apps": null, "mcp_auth_profiles": null}"#,
+);
+const GRANTS_NOT_READ_PERMISSION_ENTRY: &str = concat!(
     r#"{"object_permission_id": "kv-permission", "mcp_servers": ["server-a"], "mcp_access_groups": [],"#,
     r#" "mcp_tool_permissions": {"server-a": ["search"]}, "vector_stores": ["store-a"], "agents": [],"#,
     r#" "agent_access_groups": [], "models": [], "mcp_toolsets": [], "blocked_tools": [],"#,
@@ -145,16 +163,21 @@ async fn a_key_entry_python_wrote_is_read_typed_and_written_back_in_the_same_byt
 }
 
 #[rstest]
+#[case::named(PERMISSION_ENTRY)]
+#[case::unreadable(UNREADABLE_PERMISSION_ENTRY)]
+#[case::read_empty_receipt_kept_though_python_does_not_write_it_yet(EMPTY_GRANTS_PERMISSION_ENTRY)]
+#[case::not_read(GRANTS_NOT_READ_PERMISSION_ENTRY)]
 #[tokio::test]
 async fn an_object_permission_entry_python_wrote_is_written_back_in_the_same_bytes(
     #[values(Topology::Standalone, Topology::Cluster)] topology: Topology,
+    #[case] entry: &str,
 ) {
     let deployment = RedisDeployment::start(topology).await.unwrap();
     let raw = connect(&deployment);
     let cache = AuthCache::new(Some(remote(connect(&deployment))), Settings::default());
     let read = AuthObject::ObjectPermission("kv-permission".to_owned());
     let rewritten = AuthObject::ObjectPermission("rewritten".to_owned());
-    raw.send(commands::set(&read.key(), PERMISSION_ENTRY, TTL))
+    raw.send(commands::set(&read.key(), entry, TTL))
         .await
         .unwrap();
 
@@ -182,7 +205,7 @@ async fn an_object_permission_entry_python_wrote_is_written_back_in_the_same_byt
                 vec!["search".to_owned()]
             )])),
             None,
-            Some(PERMISSION_ENTRY),
+            Some(entry),
         )
     );
 }
