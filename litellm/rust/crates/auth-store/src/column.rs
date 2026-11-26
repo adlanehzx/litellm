@@ -55,6 +55,11 @@ fn unset_or<V: FromValue>(name: &'static str, value: Value) -> Result<Option<V>,
     }
 }
 
+/// A column the model requires that the table lets be NULL, or the column it refuses the row for.
+pub(crate) fn required<T>(column: &'static str, value: Option<T>) -> Result<T, Error> {
+    value.ok_or(Error::row(column))
+}
+
 pub(crate) fn instant(column: &'static str, at: NaiveDateTime) -> Result<Timestamp, Error> {
     Timestamp::from_microsecond(at.and_utc().timestamp_micros()).map_err(|_| Error::row(column))
 }
