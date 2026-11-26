@@ -1,9 +1,12 @@
-//! An object permission as the auth cache holds it, nested in the key or team that points at it.
+//! An object permission as the auth cache holds it, nested in the key, team or end user that
+//! points at it.
 
 use std::sync::Arc;
 
 use litellm_redis_store::auth_cache::ObjectPermissionEntry;
-use litellm_repositories::{ObjectPermission, ObjectPermissionRepository, Side};
+use litellm_repositories::{
+    EndUserObjectPermission, ObjectPermission, ObjectPermissionRepository, Side,
+};
 
 use crate::{Error, column::nullable, error::within};
 
@@ -43,15 +46,15 @@ impl ObjectPermissions {
         self.0
             .find_by_object_permission_id(id, side)
             .await?
-            .map(object_permission_entry)
+            .map(stored_object_permission_entry)
             .transpose()
             .map_err(within("object_permission"))
     }
 }
 
-/// What `LiteLLM_ObjectPermissionTable.model_dump(mode="json")` holds for `row`, or the column the
-/// model would refuse the row for. The table has no `apps` column, so the model's default stands.
-pub(crate) fn object_permission_entry(
+/// [`object_permission_entry`] for the row the object permission repository reads, whose array
+/// columns are never unset.
+pub(crate) fn stored_object_permission_entry(
     row: ObjectPermission,
 ) -> Result<ObjectPermissionEntry, Error> {
     let ObjectPermission {
@@ -69,20 +72,59 @@ pub(crate) fn object_permission_entry(
         mcp_tool_search_enabled,
         skills,
     } = row;
-    Ok(ObjectPermissionEntry {
+    object_permission_entry(EndUserObjectPermission {
         object_permission_id,
         mcp_servers: Some(mcp_servers),
         mcp_access_groups: Some(mcp_access_groups),
-        mcp_tool_permissions: nullable("mcp_tool_permissions", mcp_tool_permissions.as_ref())?,
+        mcp_tool_permissions,
         vector_stores: Some(vector_stores),
         agents: Some(agents),
         agent_access_groups: Some(agent_access_groups),
         models: Some(models),
-        mcp_toolsets: Some(mcp_toolsets),
         blocked_tools: Some(blocked_tools),
+        mcp_toolsets: Some(mcp_toolsets),
         search_tools: Some(search_tools),
         mcp_tool_search_enabled,
         skills: Some(skills),
+    })
+}
+
+/// What `LiteLLM_ObjectPermissionTable.model_dump(mode="json")` holds for `row`, or the column the
+/// model would refuse the row for. An unset array column takes the model's default, an empty list
+/// but unset for `mcp_toolsets` and `skills`, and the table has no `apps` column for the model to
+/// read.
+pub(crate) fn object_permission_entry(
+    row: EndUserObjectPermission,
+) -> Result<ObjectPermissionEntry, Error> {
+    let EndUserObjectPermission {
+        object_permission_id,
+        mcp_servers,
+        mcp_access_groups,
+        mcp_tool_permissions,
+        vector_stores,
+        agents,
+        agent_access_groups,
+        models,
+        blocked_tools,
+        mcp_toolsets,
+        search_tools,
+        mcp_tool_search_enabled,
+        skills,
+    } = row;
+    Ok(ObjectPermissionEntry {
+        object_permission_id,
+        mcp_servers: Some(mcp_servers.unwrap_or_default()),
+        mcp_access_groups: Some(mcp_access_groups.unwrap_or_default()),
+        mcp_tool_permissions: nullable("mcp_tool_permissions", mcp_tool_permissions.as_ref())?,
+        vector_stores: Some(vector_stores.unwrap_or_default()),
+        agents: Some(agents.unwrap_or_default()),
+        agent_access_groups: Some(agent_access_groups.unwrap_or_default()),
+        models: Some(models.unwrap_or_default()),
+        mcp_toolsets,
+        blocked_tools: Some(blocked_tools.unwrap_or_default()),
+        search_tools: Some(search_tools.unwrap_or_default()),
+        mcp_tool_search_enabled,
+        skills,
         apps: None,
         unread: Vec::new(),
     })
