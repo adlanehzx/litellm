@@ -55,11 +55,13 @@ fn unset_or<V: FromValue>(name: &'static str, value: Value) -> Result<Option<V>,
     }
 }
 
+pub(crate) fn instant(column: &'static str, at: NaiveDateTime) -> Result<Timestamp, Error> {
+    Timestamp::from_microsecond(at.and_utc().timestamp_micros()).map_err(|_| Error::row(column))
+}
+
 pub(crate) fn time(
     column: &'static str,
     at: Option<NaiveDateTime>,
 ) -> Result<Option<Timestamp>, Error> {
-    at.map(|at| Timestamp::from_microsecond(at.and_utc().timestamp_micros()))
-        .transpose()
-        .map_err(|_| Error::row(column))
+    at.map(|at| instant(column, at)).transpose()
 }
