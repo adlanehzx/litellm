@@ -13,7 +13,7 @@ pub(crate) fn column<V: FromValue>(name: &'static str, raw: &RawJson) -> Result<
     json::loads(raw.get())
         .ok()
         .and_then(|value| V::from_value(&value).ok())
-        .ok_or(Error::Row { column: name })
+        .ok_or(Error::row(name))
 }
 
 /// [`column`] for a field the model lets be unset: no value and a JSON `null` are both unset.
@@ -25,8 +25,8 @@ pub(crate) fn nullable<V: FromValue>(
         None | Some(Ok(Value::None)) => Ok(None),
         Some(Ok(value)) => V::from_value(&value)
             .map(Some)
-            .map_err(|_| Error::Row { column: name }),
-        Some(Err(_)) => Err(Error::Row { column: name }),
+            .map_err(|_| Error::row(name)),
+        Some(Err(_)) => Err(Error::row(name)),
     }
 }
 
@@ -36,5 +36,5 @@ pub(crate) fn time(
 ) -> Result<Option<Timestamp>, Error> {
     at.map(|at| Timestamp::from_microsecond(at.and_utc().timestamp_micros()))
         .transpose()
-        .map_err(|_| Error::Row { column })
+        .map_err(|_| Error::row(column))
 }
