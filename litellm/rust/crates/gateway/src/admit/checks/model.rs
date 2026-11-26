@@ -95,6 +95,15 @@ fn unserved(admit: &Admit, reached: &Reached) -> Option<Box<str>> {
         })
         .or_else(|| {
             admit
+                .translated
+                .iter()
+                .find(|(translated, _)| translated == group)
+                .map(|(_, model)| {
+                    format!("model_list.litellm_params.model {model} is translated").into()
+                })
+        })
+        .or_else(|| {
+            admit
                 .aliased
                 .iter()
                 .find(|(aliased, _)| aliased == group)

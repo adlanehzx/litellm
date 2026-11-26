@@ -79,6 +79,9 @@ pub struct Admit {
     /// The model group of each deployment whose model the cost map holds as another model's alias,
     /// with the name it holds it under.
     aliased: Vec<(String, Box<str>)>,
+    /// The model group of each deployment whose model the native `/v1/messages` does not serve
+    /// itself, as Python translates every model but Claude outside `anthropic`, with its model.
+    translated: Vec<(String, Box<str>)>,
     /// The router the native app serves through, which says where a request for a name can be
     /// served and what a call served there asks of its host.
     router: Router,
@@ -131,6 +134,21 @@ impl Admit {
                 Some((deployment.model_name.clone(), alias))
             })
             .collect();
+        let translated = deployments
+            .iter()
+            .filter(|deployment| {
+                !litellm_inference_messages::serves(
+                    &deployment.params.model,
+                    deployment.params.custom_llm_provider.as_deref(),
+                )
+            })
+            .map(|deployment| {
+                (
+                    deployment.model_name.clone(),
+                    deployment.params.model.as_str().into(),
+                )
+            })
+            .collect();
         let deployed = deployments
             .iter()
             .map(|deployment| {
@@ -148,6 +166,7 @@ impl Admit {
             stored,
             auth: state.auth(config),
             aliased,
+            translated,
             host: state.inference.host().clone(),
             inference: Some(state.inference.clone()),
             ..Self::built(config, state.inference.router.clone(), deployed)
@@ -168,6 +187,7 @@ impl Admit {
             stored: StoredConfig::Unused,
             deployed,
             aliased: Vec::new(),
+            translated: Vec::new(),
             host: NativeHost::default(),
             inference: None,
         }
