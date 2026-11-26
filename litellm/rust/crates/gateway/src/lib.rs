@@ -125,7 +125,7 @@ pub(crate) async fn inference_over(
     spend_log: Option<&SpendLog>,
 ) -> Result<Inference, Error> {
     let catalog = Catalog::parse(BUNDLED_REGISTRY)?.value;
-    let (router, shaping) = boot::router(config, &catalog).await?;
+    let (router, shaping) = boot::router(config, &catalog, variables).await?;
     let deployments = router.registry().deployments(&DeploymentFilter::default());
     let windows = host::ContextWindows::read(&catalog, &deployments).await;
     let pricing = Arc::new(pricing::CatalogPricing::new(Arc::new(catalog)));

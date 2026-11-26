@@ -52,6 +52,10 @@ pub struct Environment {
     pub spend_log_write_batch_max_bytes: Option<u64>,
     #[serde_as(as = "UintOrUnset")]
     pub spend_log_write_batch_max_rows: Option<u64>,
+    #[serde_as(as = "FloatOrUnset")]
+    pub anthropic_messages_detached_stream_drain_timeout_seconds: Option<f64>,
+    #[serde_as(as = "UintOrUnset")]
+    pub anthropic_messages_max_detached_stream_drains: Option<u64>,
 }
 
 impl Environment {

@@ -4,9 +4,12 @@
 use std::collections::HashMap;
 
 use crate::host::NativeBootHost;
-use litellm_config::{Config, Spelled};
-use litellm_inference_messages::{MessagesSettings, MessagesShaping};
+use litellm_config::{Config, Environment, Spelled};
+use litellm_core_utils::get_llm_provider_logic::LlmProviders;
+use litellm_inference::provider::resolve_llm_provider;
+use litellm_inference_messages::{MessagesSettings, MessagesShaping, VertexShaping};
 use litellm_llms::anthropic::model_capabilities::messages_route_capabilities;
+use litellm_llms::vertex_ai::common_utils::supported_regions;
 use litellm_model_catalog::Catalog;
 use litellm_python_compat::flags::lax_bool;
 use litellm_router_core::{
@@ -71,12 +74,61 @@ fn additional_drop_params(deployment: &Deployment) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// How the messages route shapes a call to `deployment`: its `drop_params`, and the
-/// capabilities the catalog and its `model_info` declare.
+/// Python's `ANTHROPIC_MESSAGES_DETACHED_STREAM_DRAIN_TIMEOUT_SECONDS` and
+/// `ANTHROPIC_MESSAGES_MAX_DETACHED_STREAM_DRAINS` defaults.
+const DETACHED_DRAIN_TIMEOUT_SECONDS: f64 = 600.0;
+const MAX_DETACHED_DRAINS: u64 = 100;
+
+/// How long, and in how many calls at once, a stream whose client left is still read to its end,
+/// as Python's async Messages relay reads a Bedrock invoke stream. The route drains only a
+/// provider whose stream it decodes itself.
+#[derive(Clone, Copy)]
+struct DetachedDrain {
+    timeout_seconds: f64,
+    limit: usize,
+}
+
+impl DetachedDrain {
+    fn read(environment: &Environment) -> Self {
+        Self {
+            timeout_seconds: environment
+                .anthropic_messages_detached_stream_drain_timeout_seconds
+                .unwrap_or(DETACHED_DRAIN_TIMEOUT_SECONDS),
+            limit: usize::try_from(
+                environment
+                    .anthropic_messages_max_detached_stream_drains
+                    .unwrap_or(MAX_DETACHED_DRAINS),
+            )
+            .unwrap_or(usize::MAX),
+        }
+    }
+}
+
+/// The model map's `supported_regions` of a Claude on Vertex AI deployment, which the route
+/// moves a configured location outside of to the first one, as Python's
+/// `VertexBase.get_vertex_region` does.
+fn vertex(deployment: &Deployment, catalog: &Catalog) -> VertexShaping {
+    let params = &deployment.params;
+    let supported = resolve_llm_provider(
+        &params.model,
+        params.custom_llm_provider.as_deref(),
+        "messages",
+    )
+    .ok()
+    .filter(|resolved| resolved.provider == LlmProviders::VertexAi)
+    .map(|resolved| supported_regions(catalog, resolved.model));
+    VertexShaping {
+        supported_regions: supported.unwrap_or_default(),
+    }
+}
+
+/// How the messages route shapes a call to `deployment`: its `drop_params`, the capabilities
+/// the catalog and its `model_info` declare, and what the route reads of a cloud provider's call.
 fn shaping(
     deployment: &Deployment,
     catalog: &Catalog,
     drops_params_globally: bool,
+    drain: DetachedDrain,
 ) -> MessagesShaping {
     let params = &deployment.params;
     let drop_params = drops_params_globally || is_on(params.drop_params.as_ref());
@@ -88,8 +140,11 @@ fn shaping(
             additional_drop_params: additional_drop_params(deployment),
             base_model: base_model.map(str::to_owned),
             pricing: crate::pricing::identity(deployment),
+            detached_drain_timeout: Some(drain.timeout_seconds),
+            detached_drain_limit: Some(drain.limit),
             ..MessagesSettings::default()
         },
+        vertex: vertex(deployment, catalog),
         capabilities: messages_route_capabilities(
             catalog,
             &params.model,
@@ -103,7 +158,6 @@ fn shaping(
                     .and_then(Value::as_bool)
             },
         ),
-        ..MessagesShaping::default()
     }
 }
 
@@ -112,6 +166,7 @@ fn shaping(
 pub(crate) async fn router(
     config: &Config,
     catalog: &Catalog,
+    environment: &Environment,
 ) -> Result<(Router, HashMap<String, MessagesShaping>), Error> {
     let (settings, dynamic) = RouterConfig::from_settings(&config.router_settings)?;
     let router = Router::new(settings, dynamic)?;
@@ -125,6 +180,7 @@ pub(crate) async fn router(
         )
         .await?;
     let drops_params_globally = config.litellm_settings.drop_params == Some(true);
+    let drain = DetachedDrain::read(environment);
     let shaping = router
         .registry()
         .deployments(&DeploymentFilter::default())
@@ -132,7 +188,7 @@ pub(crate) async fn router(
         .map(|deployment| {
             (
                 deployment.id.clone(),
-                shaping(deployment, catalog, drops_params_globally),
+                shaping(deployment, catalog, drops_params_globally, drain),
             )
         })
         .collect();
@@ -174,7 +230,9 @@ mod tests {
         super::HashMap<String, super::MessagesShaping>,
     ) {
         let config = Config::from_yaml(yaml).unwrap();
-        super::router(&config, &catalog()).await.unwrap()
+        super::router(&config, &catalog(), &litellm_config::Environment::default())
+            .await
+            .unwrap()
     }
 
     #[rstest]
@@ -287,5 +345,68 @@ mod tests {
         .await;
 
         assert_eq!(shaping.values().next().unwrap().settings.pricing, None);
+    }
+
+    #[rstest]
+    #[case::vertex_claude("vertex_ai/claude-opus-5-5", &["us-east5", "europe-west1"])]
+    #[case::provider_named_apart("claude-opus-5-5\n      custom_llm_provider: vertex_ai", &["us-east5", "europe-west1"])]
+    #[case::another_provider("anthropic/claude-opus-5-5", &[])]
+    #[tokio::test]
+    async fn a_vertex_deployment_carries_the_regions_its_model_is_served_in(
+        #[case] model: &str,
+        #[case] regions: &[&str],
+    ) {
+        let catalog = Catalog::parse(
+            br#"{"vertex_ai/claude-opus-5-5": {"litellm_provider": "vertex_ai-anthropic_models", "supported_regions": ["us-east5", "europe-west1"]}}"#,
+        )
+        .unwrap()
+        .value;
+        let config = Config::from_yaml(&format!(
+            "model_list:\n  - model_name: public-model\n    litellm_params:\n      model: {model}"
+        ))
+        .unwrap();
+
+        let (_, shaping) =
+            super::router(&config, &catalog, &litellm_config::Environment::default())
+                .await
+                .unwrap();
+
+        assert_eq!(
+            shaping.values().next().unwrap().vertex.supported_regions,
+            regions
+        );
+    }
+
+    #[rstest]
+    #[case::python_defaults(None, None, 600.0, 100)]
+    #[case::set_in_the_environment(Some(30.0), Some(4), 30.0, 4)]
+    #[tokio::test]
+    async fn a_stream_whose_client_left_is_drained_as_python_drains_it(
+        #[case] timeout: Option<f64>,
+        #[case] limit: Option<u64>,
+        #[case] expected_timeout: f64,
+        #[case] expected_limit: usize,
+    ) {
+        let config = Config::from_yaml(
+            "model_list:\n  - model_name: public-model\n    litellm_params:\n      model: bedrock/us.anthropic.claude-opus-5-5-v1:0",
+        )
+        .unwrap();
+        let environment = litellm_config::Environment {
+            anthropic_messages_detached_stream_drain_timeout_seconds: timeout,
+            anthropic_messages_max_detached_stream_drains: limit,
+            ..litellm_config::Environment::default()
+        };
+
+        let (_, shaping) = super::router(&config, &catalog(), &environment)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            shaping.values().next().unwrap().settings.detached_drain(),
+            Some(litellm_host::protocol::DetachedDrain {
+                timeout: std::time::Duration::from_secs_f64(expected_timeout),
+                limit: expected_limit,
+            })
+        );
     }
 }
