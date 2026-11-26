@@ -7,7 +7,7 @@ mod support;
 
 use jiff::Timestamp;
 use litellm_redis_store::auth_cache::{
-    AuthObject, KeyEntry, Lists, MemberEntry, MemberRole, ObjectPermissionEntry,
+    AuthObject, Dict, KeyEntry, MemberEntry, MemberRole, ObjectPermissionEntry,
 };
 use litellm_redis_testing::Topology;
 use rstest::rstest;
@@ -139,7 +139,7 @@ async fn an_object_permission_entry_python_wrote_is_written_back_in_the_same_byt
         ),
         (
             Some(vec!["store-a".to_owned()]),
-            Some(Lists(vec![(
+            Some(Dict(vec![(
                 "server-a".to_owned(),
                 vec!["search".to_owned()]
             )])),
